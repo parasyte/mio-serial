@@ -55,22 +55,15 @@ mod os_prelude {
     pub use mio::windows::NamedPipe;
     pub use serialport::COMPort as NativeBlockingSerialPort;
     pub use std::ffi::OsStr;
-    pub use std::io::{self, Read, Write};
     pub use std::mem;
     pub use std::os::windows::ffi::OsStrExt;
-    pub use std::os::windows::io::{AsRawHandle, FromRawHandle, RawHandle};
+    pub use std::os::windows::io::FromRawHandle;
     pub use std::path::Path;
     pub use std::ptr;
-    pub use std::time::Duration;
-    pub use winapi::shared::minwindef::TRUE;
-    pub use winapi::um::commapi::SetCommTimeouts;
     pub use winapi::um::fileapi::*;
-    pub use winapi::um::handleapi::{DuplicateHandle, INVALID_HANDLE_VALUE};
-    pub use winapi::um::processthreadsapi::GetCurrentProcess;
-    pub use winapi::um::winbase::{COMMTIMEOUTS, FILE_FLAG_OVERLAPPED};
-    pub use winapi::um::winnt::{
-        DUPLICATE_SAME_ACCESS, FILE_ATTRIBUTE_NORMAL, GENERIC_READ, GENERIC_WRITE, HANDLE,
-    };
+    pub use winapi::um::handleapi::INVALID_HANDLE_VALUE;
+    pub use winapi::um::winbase::FILE_FLAG_OVERLAPPED;
+    pub use winapi::um::winnt::{FILE_ATTRIBUTE_NORMAL, GENERIC_READ, GENERIC_WRITE, HANDLE};
 }
 use os_prelude::*;
 
@@ -623,7 +616,6 @@ impl TryFrom<NativeBlockingSerialPort> for SerialStream {
         com_port.set_data_bits(data_bits)?;
         com_port.set_stop_bits(stop_bits)?;
         com_port.set_flow_control(flow_control)?;
-        sys::override_comm_timeouts(handle)?;
 
         Ok(Self {
             inner: com_port,
@@ -724,7 +716,6 @@ mod io {
 #[cfg(windows)]
 mod io {
     use super::{NativeBlockingSerialPort, SerialStream, StdIoResult};
-    use crate::sys;
     use mio::windows::NamedPipe;
     use std::io::{Read, Write};
     use std::mem;
@@ -762,12 +753,9 @@ mod io {
     }
 
     impl FromRawHandle for SerialStream {
-        /// This method can potentially fail to override the communication timeout
-        /// value set in `sys::override_comm_timeouts` without any indication to the user.
         unsafe fn from_raw_handle(handle: RawHandle) -> Self {
             let inner = mem::ManuallyDrop::new(NativeBlockingSerialPort::from_raw_handle(handle));
             let pipe = NamedPipe::from_raw_handle(handle);
-            sys::override_comm_timeouts(handle).ok();
 
             Self { inner, pipe }
         }
@@ -796,33 +784,6 @@ mod sys {
             let port = NativeBlockingSerialPort::from_raw_fd(fd);
             Self { inner: port }
         }
-    }
-}
-
-#[cfg(windows)]
-mod sys {
-
-    use super::os_prelude::*;
-    use super::StdIoResult;
-    /// Overrides timeout value set by serialport-rs so that the read end will
-    /// never wake up with 0-byte payload.
-    pub(crate) fn override_comm_timeouts(handle: RawHandle) -> StdIoResult<()> {
-        let mut timeouts = COMMTIMEOUTS {
-            // wait at most 1ms between two bytes (0 means no timeout)
-            ReadIntervalTimeout: 1,
-            // disable "total" timeout to wait at least 1 byte forever
-            ReadTotalTimeoutMultiplier: 0,
-            ReadTotalTimeoutConstant: 0,
-            // write timeouts are just copied from serialport-rs
-            WriteTotalTimeoutMultiplier: 0,
-            WriteTotalTimeoutConstant: 0,
-        };
-
-        let r = unsafe { SetCommTimeouts(handle, &mut timeouts) };
-        if r == 0 {
-            return Err(io::Error::last_os_error());
-        }
-        Ok(())
     }
 }
 
